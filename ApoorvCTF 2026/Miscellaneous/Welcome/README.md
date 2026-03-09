@@ -12,26 +12,14 @@ Welcome to **ApoorvCTF'26**.
 
 Did you join our discord? https://discord.gg/jUg8JNyX
 
+## Files
+
+- [retrflg.png](./retrflg.png)
+
 ## Writeup
 
 ### Flag
 
-```
+Found in the `#announcements` channel on the ApoorvCTF Discord server.
 
-```
-
-### Executive Summary
-
-
-### Vulnerability Analysis
-
-
-### Exploit Strategy
-
-
-### Implementation
-
-
-### Execution & Results
-
-
+![Flag](./retrflg.png)

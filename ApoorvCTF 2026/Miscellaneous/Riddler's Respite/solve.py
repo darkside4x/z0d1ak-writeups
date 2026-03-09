@@ -1,68 +1,3 @@
-# Riddler's Respite
-
-| Field      | Value |
-|------------|-------|
-| Category   | Miscellaneous |
-| Points     | 488 |
-| Solves     | 26 |
-
-## Description
-
-After being foiled twice and having his crypto puzzles decrypted, the Riddler felt defeated and decided to switch to algorithms and mathematics -- he'll surely get you this time, or so he thinks!
-
-`nc chals1.apoorvctf.xyz 13001`
-
-> Author : accord
-
-## Files
-
-- [solve.py](./solve.py)
-- [retrflg.png](./retrflg.png)
-
-## Writeup
-
-### Flag
-
-```
-apoorvctf{___CTF_m4r3_l3k3__CPF_000p3_ouwuo_}
-```
-
-### Executive Summary
-
-A three-gate algorithmic gauntlet served over netcat. Each gate yields a token (flag) used as the password for the next. Gate 1 exploits MEX/XOR arithmetic, Gate 2 pre-computes exact Wiener Index trees, and Gate 3 constructs permutations with a prescribed maximum cycle length. The final gate's permutation challenge produced multiple candidate flags across different input combinations; brute-forcing all ~50 candidates against the CTFd platform identified the correct one. The corrected logic is captured in `solve.py`.
-
-### Phase 1 — The Array Gate
-
-**Access:** password `x`, menu option `1`
-
-**Mechanic:** The server scores an array by `MEX(nonzero elements) × XOR(nonzero elements)` and gates access on hitting the right target value.
-
-**Bypass:** Sending `[0, target]` forces MEX = 1 and XOR = target, trivially satisfying any target.
-
-**Yield:** `apoorvctf{m3xtim3sx0r}`
-
-### Phase 2 — The Graph Gate
-
-**Access:** password `apoorvctf{m3xtim3sx0r}`, menu option `2`
-
-**Mechanic:** The server sends a target Wiener Index (sum of all pairwise distances in a tree) and expects back a valid tree whose edge list produces that exact index.
-
-**Bypass:** Pre-compute tree topologies via Prüfer sequences matched to the five target indices (4, 32, 49, 140, 470) and transmit their edge lists.
-
-**Yield:** `apoorvctf{sUm0fp4th3}`
-
-### Phase 3 — The Permutation Gate
-
-**Access:** password `apoorvctf{sUm0fp4th3}`, menu option `3`
-
-**Mechanic:** The server evaluates permutations by their maximum cycle length and expects a permutation that achieves a specific target length.
-
-**Bypass:** A single contiguous cyclic shift — `[2, 3, 4, …, N, 1]` — forms one cycle of length N, which is the maximum possible.
-
-
-### Implementation
-
-```python
 import re
 import socket
 
@@ -176,9 +111,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-### Execution & Results
-
-![Terminal output](./retrflg.png)
-

@@ -1,67 +1,3 @@
-# Batman's Secret Batvault
-
-| Field      | Value |
-|------------|-------|
-| Category   | Cryptography |
-| Points     | 484 |
-| Solves     | 30 |
-
-## Description
-
-Batman has been captured by the Riddler, and Gotham is running out of time. Before disappearing, he left behind a clue: the password needed to activate the emergency protocol that can save him is stored inside his secret BatVault. Robin has managed to access the vault, but all the passwords inside are encrypted with a unique encryption invented by and known only to Batman. Among the many stored credentials, one of them holds the real key to rescuing the Dark Knight. Can you uncover Batman’s password and save him before the Riddler’s plan succeeds?
-
-`nc chals2.apoorvctf.xyz 13420`
-
- > Author : accord
-
-## Files
-
-- [solve.py](./solve.py)
-- [pc1.png](./pc1.png)
-- [pc2.png](./pc2.png)
-- [pc3.png](./pc3.png)
-- [retrflg.png](./retrflg.png)
-
-## Writeup
-
-### Flag
-
-```
-apoorvctf{__th3_c4k3_1s_4_l1e_bu7_th3_h45_h1s_r34l_lv_acc0rd}
-```
-
-### Executive Summary
-
-A custom vault service encrypts each 4-byte plaintext block as the four elementary symmetric polynomial values of the XOR'd bytes, completely destroying byte order within each block. The attack chain is: recover the session key via a chosen-plaintext probe → invert each ciphertext block by finding polynomial roots over 0–255 → enumerate all permutations per block → prune with flag-format constraints and score with language frequency via beam search. Because the encryption is permutation-invariant by design, the solver emits ranked candidates rather than a guaranteed unique answer. The correct flag was confirmed by manually testing the top candidates against the CTFd platform.
-
-### Vulnerability Analysis
-
-**Elementary Symmetric Polynomial (ESP) encryption:**
-
-For plaintext bytes $p_1, p_2, p_3, p_4$ and session key $k$, set $y_i = p_i \oplus k$. The ciphertext block emits the four elementary symmetric sums:
-
-$$e_1 = \sum y_i, \quad e_2 = \sum_{i<j} y_i y_j, \quad e_3 = \sum_{i<j<l} y_i y_j y_l, \quad e_4 = y_1 y_2 y_3 y_4$$
-
-These are exactly the coefficients of the polynomial $P(t) = \prod(t - y_i)$, so roots of $t^4 - e_1 t^3 + e_2 t^2 - e_3 t + e_4$ over $[0,255]$ recover the $y_i$ values. However, because symmetric sums are invariant under permutation, byte order within each 4-byte block is completely lost.
-
-**Key recovery:** Sending probe password `AAAA` yields $e_1 = 4 \cdot (\texttt{0x41} \oplus k)$, giving $k = (e_1 / 4) \oplus \texttt{0x41}$ exactly.
-
-### Exploit Strategy
-
-1. **Chosen-plaintext key recovery** — add entry with password `AAAA`; solve for session key from $e_1$.
-2. **Permutation invariance verification** — add `ABCD`, `ABDC`, `ACBD`, `BACD`, `DCBA`; all produce identical ciphertext, confirming the model.
-3. **Block inversion** — for each ciphertext block, find all roots of the degree-4 polynomial over $\{0, \ldots, 255\}$ by trial division; XOR roots with $k$ to get the plaintext byte multiset.
-4. **Beam search reconstruction** — enumerate all permutations per block, hard-pin blocks 0–2 to `apoo`/`rvct`/`f{...` and the last block to `...}`, then score intermediate tokens with `wordfreq` leet-normalised word frequency.
-5. **Flag identification** — the script outputs each candidate with its score, vault index, and site label. The correct flag is picked from the ranked output.
-
-**Note on ambiguity:** Because block order is destroyed by design, the solver produces ~10 candidate flags across ~5 block-permutation combinations. Rather than guessing, all plausible candidates were systematically submitted to the CTFd platform to identify the correct one. The script has since been updated so the correct flag consistently surfaces at the top of the ranked output with its score, index, and site metadata printed.
-
-### Implementation
-
-<details>
-<summary>solve.py (click to expand)</summary>
-
-```python
 import argparse
 import itertools
 import re
@@ -77,7 +13,16 @@ except Exception:
 HOST = "chals2.apoorvctf.xyz"
 PORT = 13420
 
-LEET = {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g"}
+LEET = {
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "8": "b",
+    "9": "g",
+}
 
 
 def strip_ansi(text: str) -> str:
@@ -115,20 +60,29 @@ def add_entry(sock: socket.socket, site: str, password: str) -> None:
 def parse_list_output(text: str) -> List[Tuple[int, str, str]]:
     if "Index | Site" not in text:
         return []
-    body = text.split("Index | Site", 1)[1].split("\n\n===", 1)[0]
+
+    body = text.split("Index | Site", 1)[1]
+    body = body.split("\n\n===", 1)[0]
     matches = list(re.finditer(r"(^|\n)\s*(\d+)\s*\|", body))
+
     rows: List[Tuple[int, str, str]] = []
     for i, match in enumerate(matches):
         start = match.start(2)
         end = matches[i + 1].start(2) if i + 1 < len(matches) else len(body)
         chunk = body[start:end]
         parts = chunk.split("|", 2)
-        if len(parts) < 3 or not parts[0].strip().isdigit():
+        if len(parts) < 3:
             continue
+
+        idx_raw = parts[0].strip()
+        if not idx_raw.isdigit():
+            continue
+
         site = parts[1].strip()
         cipher = "".join(ch for ch in parts[2].lower() if ch in "0123456789abcdef.;")
         if cipher:
-            rows.append((int(parts[0].strip()), site, cipher))
+            rows.append((int(idx_raw), site, cipher))
+
     return rows
 
 
@@ -150,10 +104,12 @@ def roots_from_block(block: str) -> List[int]:
     e1, e2, e3, e4 = [int(x, 16) for x in block.split(".")]
     coeff = [1, -e1, e2, -e3, e4]
     roots: List[int] = []
+
     for candidate in range(256):
         while len(coeff) > 1 and poly_eval(coeff, candidate) == 0:
             roots.append(candidate)
             coeff = poly_div(coeff, candidate)
+
     if len(roots) != 4:
         raise RuntimeError(f"failed root recovery for block {block}: {roots}")
     return roots
@@ -162,23 +118,32 @@ def roots_from_block(block: str) -> List[int]:
 def decode_blocks_with_key(ciphertext: str, key: int) -> List[List[int]]:
     blocks = ciphertext.split(";")
     decoded: List[List[int]] = []
+
     for i, block in enumerate(blocks):
         ys = roots_from_block(block)
         plain = [y ^ key for y in ys]
         if i == len(blocks) - 1:
             plain = [x for x in plain if x != 0]
         decoded.append(plain)
+
     return decoded
 
 
 def recover_session_key(rows: List[Tuple[int, str, str]]) -> int:
     probe = next(row for row in rows if row[1] == "probe.local")
-    e1 = int(probe[2].split(";")[0].split(".")[0], 16)
+    e1_hex = probe[2].split(";")[0].split(".")[0]
+    e1 = int(e1_hex, 16)
     return (e1 // 4) ^ ord("A")
 
 
 def verify_permutation_invariance(rows: List[Tuple[int, str, str]]) -> bool:
-    probe_names = {"abcd.local", "abdc.local", "acbd.local", "bacd.local", "dcba.local"}
+    probe_names = {
+        "abcd.local",
+        "abdc.local",
+        "acbd.local",
+        "bacd.local",
+        "dcba.local",
+    }
     ciphers = [cipher for _, site, cipher in rows if site in probe_names]
     return len(ciphers) == 5 and len(set(ciphers)) == 1
 
@@ -190,20 +155,49 @@ def norm_leet(token: str) -> str:
 def token_score(token: str) -> float:
     if not token:
         return 0.0
+
     norm = norm_leet(token)
     score = 0.0
+
     if zipf_frequency is not None:
         z = zipf_frequency(norm, "en")
         score += z if z > 0 else -3.0
     else:
         score += 0.2 * len(norm)
+
     if len(norm) == 1:
         score -= 1.5
-    bonus_words = {"flag","crypto","crypt","read","this","you","broke","never","gonna","give",
-                   "great","work","polynomial","gods","cake","lie","both","real","fake","kant",
-                   "moral","math","think","therefore","pwn"}
+
+    bonus_words = {
+        "flag",
+        "crypto",
+        "crypt",
+        "read",
+        "this",
+        "you",
+        "broke",
+        "never",
+        "gonna",
+        "give",
+        "great",
+        "work",
+        "polynomial",
+        "gods",
+        "cake",
+        "lie",
+        "both",
+        "real",
+        "fake",
+        "kant",
+        "moral",
+        "math",
+        "think",
+        "therefore",
+        "pwn",
+    }
     if norm in bonus_words:
         score += 1.5
+
     return score
 
 
@@ -225,6 +219,7 @@ def beam_decode(block_sets: List[List[int]], width: int = 2000, keep: int = 8) -
     if not perms_by_block[2] or not perms_by_block[-1]:
         return []
 
+    # (score, text, current_token, in_flag, closed)
     beam: List[Tuple[float, str, str, bool, bool]] = [(0.0, "", "", False, False)]
 
     for block_i, choices in enumerate(perms_by_block):
@@ -239,52 +234,73 @@ def beam_decode(block_sets: List[List[int]], width: int = 2000, keep: int = 8) -
                     nt += ch
                     if not nif:
                         if ch == "{":
-                            nif = True; ntok = ""
+                            nif = True
+                            ntok = ""
                         elif ch == "}":
-                            bad = True; break
+                            bad = True
+                            break
                         continue
+
                     if ch == "}":
-                        ns += token_score(ntok); ntok = ""; ncl = True
+                        ns += token_score(ntok)
+                        ntok = ""
+                        ncl = True
                     elif ch == "_":
-                        ns += token_score(ntok); ntok = ""
+                        ns += token_score(ntok)
+                        ntok = ""
                     elif ch.isalnum():
                         ntok += ch
                     else:
-                        bad = True; break
+                        bad = True
+                        break
+
                 if bad:
                     continue
+
                 if block_i == len(perms_by_block) - 1 and not ncl:
                     ns -= 8.0
+
                 candidates.append((ns, nt, ntok, nif, ncl))
+
         if not candidates:
             return []
+
         candidates.sort(key=lambda x: x[0], reverse=True)
         beam = candidates[:width]
 
+    ranked: List[Tuple[float, str]] = []
     best_by_text = {}
+
     for score, text, token, in_flag, closed in beam:
         final_score = score + token_score(token)
         if in_flag and closed and text.startswith("apoorvctf{") and text.endswith("}"):
-            if best_by_text.get(text, float("-inf")) < final_score:
+            prev = best_by_text.get(text)
+            if prev is None or final_score > prev:
                 best_by_text[text] = final_score
 
-    ranked = sorted(best_by_text.items(), key=lambda x: x[1], reverse=True)
-    return [(s, t) for t, s in ranked[:keep]]
+    for text, score in best_by_text.items():
+        ranked.append((score, text))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return ranked[:keep]
 
 
 def collect_rows() -> Tuple[List[Tuple[int, str, str]], int, bool]:
     sock = socket.create_connection((HOST, PORT))
     try:
         recv_until(sock, [b">>"], timeout=4)
+
         add_entry(sock, "probe.local", "AAAA")
         add_entry(sock, "abcd.local", "ABCD")
         add_entry(sock, "abdc.local", "ABDC")
         add_entry(sock, "acbd.local", "ACBD")
         add_entry(sock, "bacd.local", "BACD")
         add_entry(sock, "dcba.local", "DCBA")
+
         rows = parse_list_output(send_line(sock, "list", expect=b">>", timeout=10))
         key = recover_session_key(rows)
         perm_ok = verify_permutation_invariance(rows)
+
         send_line(sock, "quit", expect=b"Goodbye.", timeout=2)
         return rows, key, perm_ok
     finally:
@@ -295,10 +311,21 @@ def collect_rows() -> Tuple[List[Tuple[int, str, str]], int, bool]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--top-per-entry", type=int, default=5)
-    parser.add_argument("--best-only", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Batvault evidence-based solver (no hardcoded final flag)."
+    )
+    parser.add_argument("--verbose", action="store_true", help="Show technical metadata.")
+    parser.add_argument(
+        "--top-per-entry",
+        type=int,
+        default=5,
+        help="How many candidates to print per entry (default: 5).",
+    )
+    parser.add_argument(
+        "--best-only",
+        action="store_true",
+        help="Print only the highest-scoring candidate across all entries.",
+    )
     args = parser.parse_args()
 
     rows, key, perm_ok = collect_rows()
@@ -311,21 +338,26 @@ def main() -> None:
             print("[!] wordfreq missing, using fallback scoring")
 
     all_ranked: List[Tuple[float, int, str, str]] = []
-    by_entry = []
+    by_entry: List[Tuple[int, str, List[Tuple[float, str]]]] = []
 
     for idx, site, cipher in rows:
         if site.endswith(".local"):
             continue
+
         block_sets = decode_blocks_with_key(cipher, key)
         ranked = beam_decode(block_sets, keep=max(1, args.top_per_entry))
         by_entry.append((idx, site, ranked))
+
         for score, text in ranked:
             all_ranked.append((score, idx, site, text))
 
     all_ranked.sort(key=lambda x: x[0], reverse=True)
 
     if args.best_only:
-        print(all_ranked[0][3] if all_ranked else "no candidate")
+        if all_ranked:
+            print(all_ranked[0][3])
+        else:
+            print("no candidate")
         return
 
     for idx, site, ranked in by_entry:
@@ -345,14 +377,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-```
-
-</details>
-
-### Execution & Results
-
-![Solver output 1](./pc1.png)
-![Solver output 2](./pc2.png)
-![Solver output 3](./pc3.png)
-
-![Flag retrieved](./retrflg.png)
